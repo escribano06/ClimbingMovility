@@ -556,6 +556,30 @@ function extraerYoutubeId(url) {
     const m = url.match(/(?:v=|\/embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     return m ? m[1] : null;
 }
+// Tono breve sintetizado (Web Audio API) para marcar el final de un temporizador,
+// sin depender de ningún archivo de audio externo.
+function reproducirDing() {
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx)
+            return;
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.42);
+        osc.onended = () => ctx.close();
+    }
+    catch { /* audio no disponible; el aviso háptico/visual sigue funcionando igual */ }
+}
 function parseTimerSeconds(timerStr) {
     const m = timerStr && timerStr.match(/(\d+)\s*[–-]\s*(\d+)/);
     if (!m)
@@ -592,14 +616,22 @@ const CARD_STYLE_SUBTLE_TEXT = { ...CARD_STYLE_SUBTLE, color: "#C7CDD5" };
 /* ============================================================================
    COMPONENTES DE UI COMPARTIDOS
    ========================================================================== */
+function LogoMark({ size = 16, badgeSize = 30 }) {
+    // Marca original: pico de montaña (escalada) + arco discontinuo (rango de
+    // movimiento / movilidad articular) con un punto que sugiere una presa/tiza.
+    return (React.createElement("div", { className: "rounded-xl flex items-center justify-center shrink-0", style: { width: badgeSize, height: badgeSize, background: "linear-gradient(135deg,#D8B23A,#B8901F)" } },
+        React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24" },
+            React.createElement("circle", { cx: "12", cy: "12", r: "9", fill: "none", stroke: "#12161B", strokeWidth: "1.4", strokeDasharray: "40 15", strokeLinecap: "round", opacity: "0.4", transform: "rotate(-50 12 12)" }),
+            React.createElement("path", { d: "M5 16.5L10 8.5l2.4 3.8L14 9.5l5 7H5z", fill: "#12161B" }),
+            React.createElement("circle", { cx: "17.3", cy: "6.3", r: "1.2", fill: "#12161B" }))));
+}
 function TopBar({ racha }) {
     return (React.createElement("div", { className: "fixed top-0 left-0 right-0 z-20 flex items-center justify-between px-5 py-3", style: { background: "rgba(14,17,20,0.85)", backdropFilter: "blur(14px)", borderBottom: "1px solid #20262E" } },
         React.createElement("div", { className: "flex items-center gap-2.5" },
-            React.createElement("div", { className: "rounded-xl flex items-center justify-center shrink-0", style: { width: 30, height: 30, background: "linear-gradient(135deg,#D8B23A,#B8901F)" } },
-                React.createElement(Mountain, { size: 16, color: "#12161B", strokeWidth: 2.5 })),
+            React.createElement(LogoMark, null),
             React.createElement("span", { className: "text-sm font-semibold tracking-wide", style: { fontFamily: "'Space Grotesk', sans-serif", color: "#EDEFF2" } }, "MOVILIDAD")),
         racha > 0 && (React.createElement("div", { className: "flex items-center gap-1.5 px-2.5 py-1 rounded-full", style: CARD_STYLE },
-            React.createElement(Flame, { size: 14, color: "#E0883C" }),
+            React.createElement(Flame, { size: 14, color: "#E0883C", className: "animate-flame" }),
             React.createElement("span", { className: "text-xs font-medium", style: { color: "#EDEFF2", fontFamily: "'JetBrains Mono', monospace" } }, racha)))));
 }
 function RouteLine({ total, currentIndex }) {
@@ -694,50 +726,55 @@ function HomeScreen({ state, onStartTest, onStartRoutine, onStartRoutineByZone }
             return { region: mejorRegion, delta: Math.round(mejorDelta) };
         return null;
     }, [state.testHistory, ultimoTest]);
-    return (React.createElement("div", { className: "pb-28 px-5 pt-20" },
-        React.createElement("p", { className: "text-sm", style: { color: "#5B6672" } },
-            greeting(),
-            " \uD83D\uDC4B"),
-        React.createElement("h1", { className: "text-2xl font-semibold mt-1 mb-6", style: { fontFamily: "'Space Grotesk', sans-serif", color: "#EDEFF2" } }, "Tu movilidad de hoy"),
-        !ultimoTest ? (React.createElement("div", { className: "rounded-2xl p-6 text-center mb-8", style: CARD_STYLE },
-            React.createElement("div", { className: "text-4xl mb-3" }, "\uD83E\uDDD7"),
-            React.createElement("p", { className: "mb-5", style: { color: "#8B95A1" } }, "Todav\u00EDa no conocemos tu movilidad. Un test r\u00E1pido nos dir\u00E1 qu\u00E9 necesitas trabajar."),
-            React.createElement(PrimaryButton, { onClick: onStartTest }, "Hacer test de movilidad"))) : (React.createElement(React.Fragment, null,
-            React.createElement("div", { className: "flex gap-2 mb-3 overflow-x-auto" }, [5, 10, 15, 20].map(d => (React.createElement(Chip, { key: d, active: duracion === d, onClick: () => setDuracion(d) },
-                d,
-                " min")))),
-            React.createElement("div", { className: "flex gap-2 mb-5 overflow-x-auto" }, [["general", "General"], ["pre", "Pre-escalada"], ["post", "Post-escalada"]].map(([id, lab]) => (React.createElement(Chip, { key: id, active: contexto === id, onClick: () => setContexto(id) }, lab)))),
-            React.createElement("div", { className: "rounded-2xl p-6 mb-6", style: CARD_STYLE },
-                React.createElement("div", { className: "flex items-baseline gap-2 mb-1" },
-                    React.createElement("span", { className: "text-4xl font-bold", style: { fontFamily: "'JetBrains Mono', monospace", color: "#DAB53E" } }, duracion),
-                    React.createElement("span", { className: "text-lg", style: { color: "#8B95A1" } }, "min")),
-                React.createElement("p", { className: "text-sm mb-5", style: { color: "#8B95A1" } },
-                    preview ? preview.regionesCubiertas.join(" · ") : "…",
-                    preview?.tipo?.startsWith("mantenimiento") && " (mantenimiento)"),
-                React.createElement(PrimaryButton, { onClick: () => onStartRoutine(duracion, contexto) }, "Empezar rutina")),
-            React.createElement("div", { className: "flex items-center gap-4 mb-2" },
-                React.createElement("div", { className: "flex items-center gap-1.5" },
-                    React.createElement(Flame, { size: 18, color: "#E0883C" }),
-                    React.createElement("span", { style: { color: "#EDEFF2" } },
-                        racha,
-                        " d\u00EDas de racha")),
-                React.createElement("div", { className: "flex items-center gap-1.5" },
-                    React.createElement(Trophy, { size: 16, color: "#8B95A1" }),
-                    React.createElement("span", { className: "text-sm", style: { color: "#8B95A1" } },
-                        rutinasCompletadas,
-                        " rutinas"))),
-            mejora && (React.createElement("p", { className: "text-sm mt-1", style: { color: "#4CAF6D" } },
-                "\u00DAltima mejora: ",
-                mejora.region,
-                " +",
-                mejora.delta,
-                " \u2191")),
-            React.createElement("button", { onClick: onStartTest, className: "text-sm mt-5 underline", style: { color: "#5B6672" } }, "Repetir test de movilidad"))),
-        React.createElement("div", { className: "mt-10" },
-            React.createElement("p", { className: "text-xs uppercase tracking-widest mb-3", style: { color: "#5B6672" } }, "Rutina r\u00E1pida por zona"),
-            React.createElement("div", { className: "flex gap-2 flex-wrap" }, REGIONES_DISPONIBLES.map(r => (React.createElement("button", { key: r, onClick: () => onStartRoutineByZone(r, 15, "general"), className: "px-4 py-2.5 rounded-xl text-sm font-medium transition-transform active:scale-95", style: CARD_STYLE_SUBTLE_TEXT },
-                REGION_LABEL_CORTO[r],
-                " \u00B7 15\u00A0min")))))));
+    return (React.createElement("div", { className: "pb-28" },
+        React.createElement("div", { className: "relative mb-6", style: { height: 200, marginTop: -1 } },
+            React.createElement("img", { src: "https://images.unsplash.com/photo-1522163182402-834f871fd851?w=900&q=70&auto=format&fit=crop", alt: "Escalador en roca", className: "w-full h-full object-cover", style: { filter: "saturate(0.9)" } }),
+            React.createElement("div", { className: "absolute inset-0", style: { background: "linear-gradient(180deg, rgba(14,17,20,0.15) 0%, rgba(14,17,20,0.55) 60%, #0E1114 100%)" } }),
+            React.createElement("div", { className: "absolute bottom-4 left-5 right-5" },
+                React.createElement("p", { className: "text-sm", style: { color: "#C7CDD5" } },
+                    greeting(),
+                    " \uD83D\uDC4B"),
+                React.createElement("h1", { className: "text-2xl font-semibold mt-0.5", style: { fontFamily: "'Space Grotesk', sans-serif", color: "#FFFFFF" } }, "Tu movilidad de hoy"))),
+        React.createElement("div", { className: "px-5" },
+            !ultimoTest ? (React.createElement("div", { className: "rounded-2xl p-6 text-center mb-8", style: CARD_STYLE },
+                React.createElement("div", { className: "text-4xl mb-3" }, "\uD83E\uDDD7"),
+                React.createElement("p", { className: "mb-5", style: { color: "#8B95A1" } }, "Todav\u00EDa no conocemos tu movilidad. Un test r\u00E1pido nos dir\u00E1 qu\u00E9 necesitas trabajar."),
+                React.createElement(PrimaryButton, { onClick: onStartTest }, "Hacer test de movilidad"))) : (React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "flex gap-2 mb-3 overflow-x-auto" }, [5, 10, 15, 20].map(d => (React.createElement(Chip, { key: d, active: duracion === d, onClick: () => setDuracion(d) },
+                    d,
+                    " min")))),
+                React.createElement("div", { className: "flex gap-2 mb-5 overflow-x-auto" }, [["general", "General"], ["pre", "Pre-escalada"], ["post", "Post-escalada"]].map(([id, lab]) => (React.createElement(Chip, { key: id, active: contexto === id, onClick: () => setContexto(id) }, lab)))),
+                React.createElement("div", { className: "rounded-2xl p-6 mb-6", style: CARD_STYLE },
+                    React.createElement("div", { className: "flex items-baseline gap-2 mb-1" },
+                        React.createElement("span", { className: "text-4xl font-bold", style: { fontFamily: "'JetBrains Mono', monospace", color: "#DAB53E" } }, duracion),
+                        React.createElement("span", { className: "text-lg", style: { color: "#8B95A1" } }, "min")),
+                    React.createElement("p", { className: "text-sm mb-5", style: { color: "#8B95A1" } },
+                        preview ? preview.regionesCubiertas.join(" · ") : "…",
+                        preview?.tipo?.startsWith("mantenimiento") && " (mantenimiento)"),
+                    React.createElement(PrimaryButton, { onClick: () => onStartRoutine(duracion, contexto) }, "Empezar rutina")),
+                React.createElement("div", { className: "flex items-center gap-4 mb-2" },
+                    React.createElement("div", { className: "flex items-center gap-1.5" },
+                        React.createElement(Flame, { size: 18, color: "#E0883C" }),
+                        React.createElement("span", { style: { color: "#EDEFF2" } },
+                            racha,
+                            " d\u00EDas de racha")),
+                    React.createElement("div", { className: "flex items-center gap-1.5" },
+                        React.createElement(Trophy, { size: 16, color: "#8B95A1" }),
+                        React.createElement("span", { className: "text-sm", style: { color: "#8B95A1" } },
+                            rutinasCompletadas,
+                            " rutinas"))),
+                mejora && (React.createElement("p", { className: "text-sm mt-1", style: { color: "#4CAF6D" } },
+                    "\u00DAltima mejora: ",
+                    mejora.region,
+                    " +",
+                    mejora.delta,
+                    " \u2191")),
+                React.createElement("button", { onClick: onStartTest, className: "text-sm mt-5 underline", style: { color: "#5B6672" } }, "Repetir test de movilidad"))),
+            React.createElement("div", { className: "mt-10" },
+                React.createElement("p", { className: "text-xs uppercase tracking-widest mb-3", style: { color: "#5B6672" } }, "Rutina r\u00E1pida por zona"),
+                React.createElement("div", { className: "flex gap-2 flex-wrap" }, REGIONES_DISPONIBLES.map(r => (React.createElement("button", { key: r, onClick: () => onStartRoutineByZone(r, 15, "general"), className: "px-4 py-2.5 rounded-xl text-sm font-medium transition-transform active:scale-95", style: CARD_STYLE_SUBTLE_TEXT },
+                    REGION_LABEL_CORTO[r],
+                    " \u00B7 15\u00A0min"))))))));
 }
 /* ============================================================================
    PANTALLA: TEST
@@ -880,15 +917,30 @@ function PlayerScreen({ routine, onFinish, onFeedback, onExit }) {
     const [fase, setFase] = useState("ejercicio"); // "ejercicio" | "feedback"
     const [segundosRestantes, setSegundosRestantes] = useState(0);
     const [corriendo, setCorriendo] = useState(false);
+    const [ladoActual, setLadoActual] = useState("izquierda"); // solo relevante si requiereLados
     const intervalRef = useRef(null);
     const item = routine.items[i];
     const ex = item.exercise;
     const esTiempo = ex.modo !== "repeticiones";
+    const requiereLados = (ex.dosis || "").includes("/lado");
     useEffect(() => {
         setSegundosRestantes(parseTimerSeconds(ex.timer));
         setCorriendo(false);
         setFase("ejercicio");
+        setLadoActual("izquierda");
     }, [i]);
+    // Al terminar un lado: si el ejercicio es por lado y aún no hemos hecho el segundo,
+    // reinicia el temporizador para el otro lado en vez de pasar a feedback.
+    function terminarLadoOFeedback() {
+        if (requiereLados && ladoActual === "izquierda") {
+            setLadoActual("derecha");
+            setSegundosRestantes(parseTimerSeconds(ex.timer));
+            setCorriendo(false);
+        }
+        else {
+            setFase("feedback");
+        }
+    }
     useEffect(() => {
         if (corriendo && segundosRestantes > 0) {
             intervalRef.current = setTimeout(() => setSegundosRestantes(s => s - 1), 1000);
@@ -897,13 +949,14 @@ function PlayerScreen({ routine, onFinish, onFeedback, onExit }) {
             setCorriendo(false);
             if (navigator.vibrate)
                 navigator.vibrate(200);
-            setFase("feedback");
+            reproducirDing();
+            terminarLadoOFeedback();
         }
         return () => clearTimeout(intervalRef.current);
     }, [corriendo, segundosRestantes]);
     function marcarHecho() {
         setCorriendo(false);
-        setFase("feedback");
+        terminarLadoOFeedback();
     }
     function elegirFeedback(valor) {
         onFeedback(ex.id, valor);
@@ -927,13 +980,20 @@ function PlayerScreen({ routine, onFinish, onFeedback, onExit }) {
                 i + 1,
                 "/",
                 routine.items.length)),
-        fase === "ejercicio" ? (React.createElement("div", { className: "flex-1 flex flex-col overflow-y-auto" },
+        fase === "ejercicio" ? (React.createElement("div", { key: i, className: "flex-1 flex flex-col overflow-y-auto animate-fadein" },
             React.createElement(VideoEmbed, { videoUrl: ex.videoUrl, videoTipo: ex.videoTipo, videoFuente: ex.videoFuente, titulo: ex.nombre, fallbackEmoji: REGION_EMOJI[ex.region] }),
             React.createElement("h2", { className: "text-xl font-semibold mb-2", style: { fontFamily: "'Space Grotesk', sans-serif", color: "#EDEFF2" } }, ex.nombre),
             React.createElement("p", { className: "text-sm mb-1", style: { color: "#5B6672" } },
                 ex.region,
                 " \u00B7 ",
                 ex.subregion),
+            requiereLados && (React.createElement("div", { className: "flex gap-2 mb-1" }, ["izquierda", "derecha"].map(lado => (React.createElement("span", { key: lado, className: "text-xs px-2.5 py-1 rounded-full capitalize", style: {
+                    background: lado === ladoActual ? "linear-gradient(135deg,#D8B23A,#B8901F)" : "#181E25",
+                    color: lado === ladoActual ? "#12161B" : "#5B6672",
+                    border: lado === ladoActual ? "none" : "1px solid #262E37",
+                } },
+                lado === "izquierda" && ladoActual === "derecha" ? "✓ " : "",
+                lado))))),
             React.createElement("p", { className: "mb-6", style: { color: "#8B95A1" } }, ex.descripcion),
             React.createElement("div", { className: "flex-1 flex flex-col items-center justify-center" }, esTiempo ? (React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "relative", style: { width: 140, height: 140 } },
@@ -965,16 +1025,37 @@ function PlayerScreen({ routine, onFinish, onFeedback, onExit }) {
 /* ============================================================================
    PANTALLA: RUTINA COMPLETADA
    ========================================================================== */
+function Confetti() {
+    const piezas = useMemo(() => {
+        const colores = ["#DAB53E", "#4CAF6D", "#5B8C99", "#E0883C", "#EDEFF2"];
+        return Array.from({ length: 28 }).map((_, i) => ({
+            left: Math.random() * 100,
+            delay: Math.random() * 0.6,
+            duration: 2.2 + Math.random() * 1.2,
+            color: colores[i % colores.length],
+            size: 6 + Math.random() * 6,
+            rotate: Math.random() * 360,
+        }));
+    }, []);
+    return (React.createElement("div", { className: "pointer-events-none fixed inset-0 overflow-hidden", style: { zIndex: 5 } }, piezas.map((p, i) => (React.createElement("div", { key: i, style: {
+            position: "absolute", left: `${p.left}%`, top: 0,
+            width: p.size, height: p.size * 0.4, background: p.color,
+            borderRadius: 2, transform: `rotate(${p.rotate}deg)`,
+            animation: `confetti-fall ${p.duration}s ease-in ${p.delay}s forwards`,
+        } })))));
+}
 function CompleteScreen({ routine, racha, onContinue }) {
-    return (React.createElement("div", { className: "min-h-screen px-5 flex flex-col items-center justify-center text-center", style: { background: BG_GRADIENT } },
-        React.createElement(Sparkles, { size: 40, color: "#C9A227", className: "mb-4" }),
+    return (React.createElement("div", { className: "min-h-screen px-5 flex flex-col items-center justify-center text-center relative overflow-hidden", style: { background: BG_GRADIENT } },
+        React.createElement(Confetti, null),
+        React.createElement("div", { className: "rounded-full flex items-center justify-center mb-4", style: { width: 64, height: 64, background: "linear-gradient(135deg,#D8B23A,#B8901F)" } },
+            React.createElement(Sparkles, { size: 30, color: "#12161B" })),
         React.createElement("h1", { className: "text-2xl font-semibold mb-2", style: { fontFamily: "'Space Grotesk', sans-serif", color: "#EDEFF2" } }, "\u00A1Rutina completada! \uD83C\uDF89"),
         React.createElement("p", { className: "mb-8", style: { color: "#8B95A1" } },
             routine.duracionObjetivoMin,
             " min \u00B7 ",
             routine.regionesCubiertas.join(" · ")),
-        React.createElement("div", { className: "flex items-center gap-2 mb-10" },
-            React.createElement(Flame, { size: 20, color: "#E0883C" }),
+        React.createElement("div", { className: "flex items-center gap-2 mb-10 px-4 py-2 rounded-full", style: CARD_STYLE },
+            React.createElement(Flame, { size: 20, color: "#E0883C", className: "animate-flame" }),
             React.createElement("span", { style: { color: "#EDEFF2" } },
                 racha,
                 " d\u00EDas de racha")),
@@ -1131,8 +1212,8 @@ function App() {
     const persist = useCallback((next) => { setState(next); saveState(next); }, []);
     if (!state) {
         return (React.createElement("div", { className: "min-h-screen flex items-center justify-center", style: { background: BG_GRADIENT } },
-            React.createElement("div", { className: "rounded-2xl flex items-center justify-center animate-pulse", style: { width: 48, height: 48, background: "linear-gradient(135deg,#D8B23A,#B8901F)" } },
-                React.createElement(Mountain, { size: 24, color: "#12161B", strokeWidth: 2.5 }))));
+            React.createElement("div", { className: "animate-pulse" },
+                React.createElement(LogoMark, { size: 26, badgeSize: 52 }))));
     }
     function iniciarTest() { setFlow("test"); }
     function completarTest(resultados) {
@@ -1226,6 +1307,14 @@ function App() {
         React.createElement("link", { rel: "preconnect", href: "https://fonts.googleapis.com" }),
         React.createElement("style", null, `
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
+        @keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fadein { animation: fadein 0.28s ease-out; }
+        @keyframes pulse-flame { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+        .animate-flame { animation: pulse-flame 1.6s ease-in-out infinite; }
+        @keyframes confetti-fall {
+          0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(110vh) rotate(540deg); opacity: 0.3; }
+        }
       `),
         content));
 }
