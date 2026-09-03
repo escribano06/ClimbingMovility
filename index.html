@@ -108,6 +108,11 @@ const PlayCircle = (p) => React.createElement(IconBase, { ...p },
     React.createElement("path", { d: "M10 8l6 4-6 4V8z" }));
 const Mountain = (p) => React.createElement(IconBase, { ...p },
     React.createElement("path", { d: "M3 20l6-10 4 6 2-3 6 7H3z" }));
+const CalendarIcon = (p) => React.createElement(IconBase, { ...p },
+    React.createElement("rect", { x: "3", y: "5", width: "18", height: "16", rx: "2" }),
+    React.createElement("path", { d: "M3 10h18" }),
+    React.createElement("path", { d: "M8 3v4" }),
+    React.createElement("path", { d: "M16 3v4" }));
 /* ============================================================================
    MOTOR — puerto JS del motor Python (models / deficit_model / generator),
    verificado contra los mismos 16 casos de test + 1872 combinaciones de estrés.
@@ -499,6 +504,720 @@ function videoParaTestItem(item) {
     return ex ? { videoUrl: ex.videoUrl, videoTipo: ex.videoTipo, videoFuente: ex.videoFuente } : {};
 }
 /* ============================================================================
+   FECHAS — utilidades sobre cadenas ISO (YYYY-MM-DD) en UTC, para que el plan
+   no se desplace un día según la zona horaria del dispositivo.
+   ========================================================================== */
+const DIAS_LARGO = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+const DIAS_CORTO = ["D", "L", "M", "X", "J", "V", "S"];
+const DIAS_ABREV = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const MESES_LARGO = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+// Orden de presentación: la semana europea empieza en lunes.
+const ORDEN_DIAS_UI = [1, 2, 3, 4, 5, 6, 0];
+function parseISO(iso) {
+    const p = String(iso || "").split("-");
+    return new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+}
+function esISOValida(iso) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || "")))
+        return false;
+    const d = parseISO(iso);
+    return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
+}
+function isoDeFecha(d) { return d.toISOString().slice(0, 10); }
+function sumarDiasISO(iso, n) {
+    const d = parseISO(iso);
+    d.setUTCDate(d.getUTCDate() + n);
+    return isoDeFecha(d);
+}
+function diaSemanaISO(iso) { return parseISO(iso).getUTCDay(); }
+function fechaCorta(iso) {
+    const d = parseISO(iso);
+    return String(d.getUTCDate()).padStart(2, "0") + "/" + String(d.getUTCMonth() + 1).padStart(2, "0");
+}
+function fechaExcel(iso) {
+    const d = parseISO(iso);
+    return String(d.getUTCDate()).padStart(2, "0") + "/" +
+        String(d.getUTCMonth() + 1).padStart(2, "0") + "/" + d.getUTCFullYear();
+}
+function fechaLarga(iso) {
+    const d = parseISO(iso);
+    return DIAS_LARGO[d.getUTCDay()].toLowerCase() + " " + d.getUTCDate() + " de " +
+        MESES_LARGO[d.getUTCMonth()] + " de " + d.getUTCFullYear();
+}
+function rangoLegible(desde, hasta) {
+    const a = parseISO(desde), b = parseISO(hasta);
+    const mismoMes = a.getUTCMonth() === b.getUTCMonth() && a.getUTCFullYear() === b.getUTCFullYear();
+    if (mismoMes)
+        return a.getUTCDate() + "–" + b.getUTCDate() + " " + MESES_LARGO[b.getUTCMonth()] + " " + b.getUTCFullYear();
+    return a.getUTCDate() + " " + MESES_LARGO[a.getUTCMonth()] + " – " + b.getUTCDate() + " " +
+        MESES_LARGO[b.getUTCMonth()] + " " + b.getUTCFullYear();
+}
+// Lunes de la semana en curso si hoy es lunes; si no, el lunes siguiente.
+function proximoLunes(iso) {
+    const dow = diaSemanaISO(iso);
+    return sumarDiasISO(iso, (1 - dow + 7) % 7);
+}
+/* ============================================================================
+   PLANIFICACIÓN — mesociclo de N semanas anclado a una fecha de inicio elegida
+   por el usuario (la Semana 1 empieza exactamente ese día, sea cual sea el día
+   de la semana). Cada sesión programada se genera con el mismo motor que las
+   rutinas manuales, rotando por las zonas prioritarias del último test.
+   ========================================================================== */
+const PLAN_SEMANAS_OPCIONES = [2, 4, 6, 8, 12];
+const PLAN_DURACION_DESCARGA = { 5: 5, 10: 5, 15: 10, 20: 10 };
+const PLAN_CONFIG_BASE = {
+    inicioSemana1: null, // se rellena con el próximo lunes si no hay nada guardado
+    semanas: 4,
+    dias: [1, 3, 5], // lunes, miércoles, viernes
+    duracion: 15,
+    contexto: "general",
+    descarga: true, // la última semana baja el volumen
+};
+function normalizarPlanConfig(cfg) {
+    const c = Object.assign({}, PLAN_CONFIG_BASE, cfg || {});
+    if (!esISOValida(c.inicioSemana1))
+        c.inicioSemana1 = proximoLunes(todayISO());
+    c.semanas = PLAN_SEMANAS_OPCIONES.includes(c.semanas) ? c.semanas : 4;
+    c.duracion = CONFIG_DURACION[c.duracion] ? c.duracion : 15;
+    c.contexto = ["general", "pre", "post"].includes(c.contexto) ? c.contexto : "general";
+    const dias = [...new Set((Array.isArray(c.dias) ? c.dias : []).map(Number).filter(d => d >= 0 && d <= 6))];
+    c.dias = dias.length ? dias.sort((a, b) => ORDEN_DIAS_UI.indexOf(a) - ORDEN_DIAS_UI.indexOf(b)) : [...PLAN_CONFIG_BASE.dias];
+    c.descarga = !!c.descarga;
+    return c;
+}
+// Zonas por las que rota el plan: las regiones con déficit activo del último
+// test (de mayor a menor prioridad); si no hay test, todas las regiones.
+function zonasDelPlan(state) {
+    const ultimoTest = state.testHistory[state.testHistory.length - 1];
+    if (ultimoTest) {
+        const activos = deficitsActivos(priorizar(identificarDeficits(ultimoTest.resultados)));
+        const zonas = [];
+        for (const d of activos)
+            if (!zonas.includes(d.region))
+                zonas.push(d.region);
+        if (zonas.length)
+            return zonas;
+    }
+    return [...REGIONES_DISPONIBLES];
+}
+function generarPlan(state, cfgEntrada, exercises) {
+    const config = normalizarPlanConfig(cfgEntrada);
+    const profile = { nivel: state.nivel, exclusiones: state.exclusiones, feedbackHistory: state.feedbackHistory };
+    const zonas = zonasDelPlan(state);
+    const semanas = [];
+    let contador = 0;
+    for (let w = 1; w <= config.semanas; w++) {
+        const inicio = sumarDiasISO(config.inicioSemana1, (w - 1) * 7);
+        const esDescarga = config.descarga && config.semanas > 1 && w === config.semanas;
+        const duracion = esDescarga ? (PLAN_DURACION_DESCARGA[config.duracion] || config.duracion) : config.duracion;
+        const sesiones = [];
+        for (let off = 0; off < 7; off++) {
+            const fecha = sumarDiasISO(inicio, off);
+            if (!config.dias.includes(diaSemanaISO(fecha)))
+                continue;
+            const zona = zonas[contador % zonas.length];
+            contador++;
+            const rutina = generarRutinaPorZona(zona, profile, duracion, config.contexto, exercises);
+            sesiones.push({
+                semana: w, fecha, diaSemana: diaSemanaISO(fecha), offset: off,
+                zona, duracion, contexto: config.contexto, descarga: esDescarga, rutina,
+            });
+        }
+        semanas.push({
+            numero: w, inicio, fin: sumarDiasISO(inicio, 6), duracion, descarga: esDescarga, sesiones,
+            minutos: sesiones.reduce((a, s) => a + s.duracion, 0),
+        });
+    }
+    return {
+        config, zonas, semanas,
+        basadoEnTest: state.testHistory.length > 0,
+        inicio: config.inicioSemana1,
+        fin: sumarDiasISO(config.inicioSemana1, config.semanas * 7 - 1),
+        totalSesiones: semanas.reduce((a, s) => a + s.sesiones.length, 0),
+        totalMinutos: semanas.reduce((a, s) => a + s.minutos, 0),
+    };
+}
+function estadoSesion(sesion, routineHistory, hoy) {
+    if (routineHistory.some(r => r.fecha === sesion.fecha && r.completada))
+        return "hecha";
+    if (sesion.fecha < hoy)
+        return "perdida";
+    if (sesion.fecha === hoy)
+        return "hoy";
+    return "programada";
+}
+const ESTADO_SESION_LABEL = { hecha: "Completada", perdida: "No realizada", hoy: "Hoy", programada: "Programada" };
+const ESTADO_SESION_COLOR = { hecha: "#4CAF6D", perdida: "#E4553F", hoy: "#DAB53E", programada: "#8B95A1" };
+/* ============================================================================
+   EXPORTACIÓN A EXCEL — hojas de cálculo del plan (mes y semana).
+   Paleta clara, legible al imprimir, coherente con la identidad de la app.
+   ========================================================================== */
+const MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const CONTEXTO_LABEL = { general: "General", pre: "Pre-escalada", post: "Post-escalada" };
+const EXCEL_COLOR = {
+    tinta: "1D242C", oro: "C9A227", oroBorde: "A8821B", oroTexto: "12161B",
+    gris: "5B6672", lineas: "DCE1E7", zebra: "F7F8FA", pizarra: "3A4552",
+    verde: "1B6E3E", verdeFondo: "E3F2E9", rojo: "A83A2C", rojoFondo: "FBECE9",
+    ambar: "8A6D12", ambarFondo: "FBF3DA", apagado: "9AA3AE",
+};
+// Fábrica de estilos: el libro deduplica internamente, así que se puede llamar
+// tantas veces como haga falta sin inflar styles.xml.
+function estXL(wb, o) {
+    const d = o || {};
+    return wb.estilo({
+        font: { bold: !!d.bold, italic: !!d.italic, size: d.size || 11, color: d.color || EXCEL_COLOR.tinta },
+        fill: d.fill || (d.alt ? EXCEL_COLOR.zebra : null),
+        border: d.border === false ? false : true,
+        borderColor: d.borderColor || EXCEL_COLOR.lineas,
+        align: { h: d.h || "left", v: d.v || "center", wrap: d.wrap !== false },
+    });
+}
+function cabeceraHoja(wb, hoja, titulo, subtitulo, nCols) {
+    const stTitulo = estXL(wb, { bold: true, size: 16, color: "F2E6BF", fill: EXCEL_COLOR.tinta, border: false, v: "center" });
+    const stSub = estXL(wb, { size: 10, color: EXCEL_COLOR.gris, border: false, v: "center" });
+    const relleno = (st, n) => Array.from({ length: n }, () => ({ v: "", s: st }));
+    hoja.fila([{ v: titulo, s: stTitulo }].concat(relleno(stTitulo, nCols - 1)), { alto: 34 });
+    hoja.combinar(1, 1, 1, nCols);
+    hoja.fila([{ v: subtitulo, s: stSub }].concat(relleno(stSub, nCols - 1)), { alto: 22 });
+    hoja.combinar(2, 1, 2, nCols);
+    hoja.fila([], { alto: 8 });
+    return 3; // última fila usada
+}
+function filaCabeceras(wb, hoja, etiquetas) {
+    const st = estXL(wb, { bold: true, color: EXCEL_COLOR.oroTexto, fill: EXCEL_COLOR.oro, borderColor: EXCEL_COLOR.oroBorde, h: "center" });
+    return hoja.fila(etiquetas.map(v => ({ v, s: st })), { alto: 26 });
+}
+function resumenPlanTexto(plan) {
+    const c = plan.config;
+    const dias = c.dias.slice().sort((a, b) => ORDEN_DIAS_UI.indexOf(a) - ORDEN_DIAS_UI.indexOf(b)).map(d => DIAS_ABREV[d]).join(", ");
+    return "Semana 1: " + fechaLarga(c.inicioSemana1) + "  ·  " + c.semanas + " semanas  ·  " +
+        dias + "  ·  " + c.duracion + " min  ·  " + CONTEXTO_LABEL[c.contexto] +
+        (c.descarga && c.semanas > 1 ? "  ·  última semana de descarga" : "");
+}
+function estiloEstado(wb, estado, alt) {
+    if (estado === "hecha")
+        return estXL(wb, { bold: true, color: EXCEL_COLOR.verde, fill: EXCEL_COLOR.verdeFondo, h: "center" });
+    if (estado === "perdida")
+        return estXL(wb, { color: EXCEL_COLOR.rojo, fill: EXCEL_COLOR.rojoFondo, h: "center" });
+    if (estado === "hoy")
+        return estXL(wb, { bold: true, color: EXCEL_COLOR.ambar, fill: EXCEL_COLOR.ambarFondo, h: "center" });
+    return estXL(wb, { color: EXCEL_COLOR.gris, alt: alt, h: "center" });
+}
+/* --- Hoja 1 del mes: calendario en rejilla (filas = semanas, columnas = días) */
+function hojaCalendarioMes(wb, plan, state) {
+    const hoy = todayISO();
+    const hoja = wb.hoja("Calendario");
+    const nCols = 8;
+    hoja.anchoColumnas([16, 19, 19, 19, 19, 19, 19, 19]);
+    cabeceraHoja(wb, hoja, "PLAN DE MOVILIDAD PARA ESCALADORES", resumenPlanTexto(plan), nCols);
+    const dowInicio = diaSemanaISO(plan.config.inicioSemana1);
+    const etiquetas = ["Semana"].concat(Array.from({ length: 7 }, (_, i) => DIAS_LARGO[(dowInicio + i) % 7]));
+    const filaCab = filaCabeceras(wb, hoja, etiquetas);
+    hoja.congelarEn(filaCab, 1);
+    const stSemana = estXL(wb, { bold: true, color: EXCEL_COLOR.tinta, fill: "EFF1F4", h: "left" });
+    const stDescanso = estXL(wb, { color: EXCEL_COLOR.apagado, italic: true, h: "center" });
+    for (const semana of plan.semanas) {
+        const celdas = [{
+                v: "Semana " + semana.numero + (semana.descarga ? " (descarga)" : "") + "\n" + fechaCorta(semana.inicio) + " – " + fechaCorta(semana.fin),
+                s: stSemana,
+            }];
+        for (let off = 0; off < 7; off++) {
+            const fecha = sumarDiasISO(semana.inicio, off);
+            const sesion = semana.sesiones.find(s => s.fecha === fecha);
+            if (!sesion) {
+                celdas.push({ v: fechaCorta(fecha) + "\nDescanso", s: stDescanso });
+                continue;
+            }
+            const estado = estadoSesion(sesion, state.routineHistory, hoy);
+            const texto = fechaCorta(fecha) + "\n" + REGION_LABEL_CORTO[sesion.zona] + " · " + sesion.duracion + " min\n" +
+                sesion.rutina.items.length + " ejercicios" + (estado === "hecha" ? " ✓" : "");
+            celdas.push({ v: texto, s: estiloEstado(wb, estado, false) });
+        }
+        hoja.fila(celdas, { alto: 46 });
+    }
+    hoja.fila([], { alto: 10 });
+    const stClave = estXL(wb, { bold: true, color: EXCEL_COLOR.gris, border: false, size: 10, h: "right" });
+    const stVacio = estXL(wb, { border: false });
+    hoja.fila([
+        { v: "Leyenda", s: stClave },
+        { v: "Completada", s: estiloEstado(wb, "hecha", false) },
+        { v: "Hoy", s: estiloEstado(wb, "hoy", false) },
+        { v: "No realizada", s: estiloEstado(wb, "perdida", false) },
+        { v: "Programada", s: estiloEstado(wb, "programada", false) },
+        { v: "Descanso", s: stDescanso },
+        { v: "", s: stVacio },
+        { v: "", s: stVacio },
+    ], { alto: 20 });
+    hoja.fila([], { alto: 6 });
+    const fRes = filaCabeceras(wb, hoja, ["Resumen", "Valor", "", "", "", "", "", ""]);
+    hoja.combinar(fRes, 2, fRes, nCols);
+    const filasResumen = [
+        ["Sesiones programadas", String(plan.totalSesiones)],
+        ["Minutos totales", String(plan.totalMinutos) + " min"],
+        ["Sesiones completadas", String(plan.semanas.reduce((a, w) => a + w.sesiones.filter(s => estadoSesion(s, state.routineHistory, hoy) === "hecha").length, 0))],
+        ["Zonas trabajadas", plan.zonas.map(z => REGION_LABEL_CORTO[z]).join(", ")],
+        ["Origen de las zonas", plan.basadoEnTest ? "Déficits del último test de movilidad" : "Rotación general (aún sin test)"],
+        ["Nivel del usuario", NIVEL_LABEL[state.nivel]],
+        ["Generado el", fechaExcel(hoy)],
+    ];
+    filasResumen.forEach((par, i) => {
+        const st = estXL(wb, { alt: i % 2 === 1 });
+        const f = hoja.fila([{ v: par[0], s: estXL(wb, { bold: true, alt: i % 2 === 1 }) }, { v: par[1], s: st },
+            { v: "", s: st }, { v: "", s: st }, { v: "", s: st }, { v: "", s: st }, { v: "", s: st }, { v: "", s: st }]);
+        hoja.combinar(f, 2, f, nCols);
+    });
+    return hoja;
+}
+/* --- Hoja tabular: una fila por sesión ----------------------------------- */
+function hojaSesiones(wb, plan, state, semanas, nombre) {
+    const hoy = todayISO();
+    const hoja = wb.hoja(nombre || "Sesiones");
+    const cabs = ["Semana", "Fecha", "Día", "Sesión", "Zona", "Contexto", "Duración (min)", "Nº ejercicios", "Tiempo estimado", "Estado"];
+    hoja.anchoColumnas([9, 12, 11, 10, 20, 14, 14, 14, 15, 15]);
+    const titulo = semanas.length === 1 ? "SESIONES — SEMANA " + semanas[0].numero : "SESIONES DEL PLAN";
+    cabeceraHoja(wb, hoja, titulo, resumenPlanTexto(plan), cabs.length);
+    const filaCab = filaCabeceras(wb, hoja, cabs);
+    hoja.congelarEn(filaCab, 0);
+    hoja.filtrar(filaCab, 1, filaCab, cabs.length);
+    let n = 0;
+    for (const semana of semanas) {
+        for (const sesion of semana.sesiones) {
+            n++;
+            const alt = n % 2 === 0;
+            const st = estXL(wb, { alt });
+            const stC = estXL(wb, { alt, h: "center" });
+            const estado = estadoSesion(sesion, state.routineHistory, hoy);
+            hoja.fila([
+                { v: semana.numero, s: stC },
+                { v: fechaExcel(sesion.fecha), s: stC },
+                { v: DIAS_LARGO[sesion.diaSemana], s: st },
+                { v: "#" + n, s: stC },
+                { v: sesion.zona + (sesion.descarga ? " (descarga)" : ""), s: estXL(wb, { alt, bold: true }) },
+                { v: CONTEXTO_LABEL[sesion.contexto], s: st },
+                { v: sesion.duracion, s: stC },
+                { v: sesion.rutina.items.length, s: stC },
+                { v: Math.round(sesion.rutina.duracionEstimadaS / 60) + " min", s: stC },
+                { v: ESTADO_SESION_LABEL[estado], s: estiloEstado(wb, estado, alt) },
+            ]);
+        }
+    }
+    if (n === 0) {
+        const st = estXL(wb, { italic: true, color: EXCEL_COLOR.apagado, h: "center" });
+        const f = hoja.fila(Array.from({ length: cabs.length }, (_, i) => ({ v: i === 0 ? "No hay sesiones programadas en este rango." : "", s: st })));
+        hoja.combinar(f, 1, f, cabs.length);
+    }
+    return hoja;
+}
+/* --- Hoja tabular: una fila por ejercicio -------------------------------- */
+function hojaEjercicios(wb, plan, state, semanas, nombre) {
+    const hoja = wb.hoja(nombre || "Ejercicios");
+    const cabs = ["Semana", "Fecha", "Día", "Zona", "Nº", "Ejercicio", "Región", "Subregión",
+        "Descripción", "Dosis", "Modo", "Evidencia", "Vídeo"];
+    hoja.anchoColumnas([8, 12, 11, 18, 5, 34, 17, 22, 52, 18, 15, 20, 42]);
+    cabeceraHoja(wb, hoja, "EJERCICIO A EJERCICIO", resumenPlanTexto(plan), cabs.length);
+    const filaCab = filaCabeceras(wb, hoja, cabs);
+    hoja.congelarEn(filaCab, 0);
+    hoja.filtrar(filaCab, 1, filaCab, cabs.length);
+    let bloque = 0;
+    for (const semana of semanas) {
+        for (const sesion of semana.sesiones) {
+            bloque++;
+            const alt = bloque % 2 === 0; // zebra por sesión, no por fila: agrupa visualmente
+            const st = estXL(wb, { alt });
+            const stC = estXL(wb, { alt, h: "center" });
+            if (!sesion.rutina.items.length) {
+                hoja.fila([{ v: semana.numero, s: stC }, { v: fechaExcel(sesion.fecha), s: stC },
+                    { v: DIAS_LARGO[sesion.diaSemana], s: st }, { v: sesion.zona, s: st }, { v: "", s: stC },
+                    { v: "Sin ejercicios disponibles para tu nivel/contexto", s: estXL(wb, { alt, italic: true, color: EXCEL_COLOR.apagado }) },
+                    { v: "", s: st }, { v: "", s: st }, { v: "", s: st }, { v: "", s: st }, { v: "", s: st }, { v: "", s: st }, { v: "", s: st }]);
+                continue;
+            }
+            for (const item of sesion.rutina.items) {
+                const ex = item.exercise;
+                hoja.fila([
+                    { v: semana.numero, s: stC },
+                    { v: fechaExcel(sesion.fecha), s: stC },
+                    { v: DIAS_LARGO[sesion.diaSemana], s: st },
+                    { v: sesion.zona, s: st },
+                    { v: item.orden, s: stC },
+                    { v: ex.nombre, s: estXL(wb, { alt, bold: true }) },
+                    { v: ex.region, s: st },
+                    { v: ex.subregion, s: st },
+                    { v: ex.descripcion || "", s: st },
+                    { v: ex.dosis || "", s: st },
+                    { v: ex.modo || "", s: st },
+                    { v: ex.evidencia || "", s: st },
+                    { v: ex.videoUrl || "", s: estXL(wb, { alt, color: "2A5DB0", size: 10 }) },
+                ]);
+            }
+        }
+    }
+    return hoja;
+}
+/* --- Hoja de detalle semanal: bloques por día con celdas combinadas ------- */
+function hojaSemanaDetalle(wb, plan, semana, state) {
+    const hoy = todayISO();
+    const hoja = wb.hoja("Semana " + semana.numero);
+    const cabs = ["Día", "Fecha", "Sesión", "Nº", "Ejercicio", "Región / subregión", "Dosis", "Modo", "Evidencia", "Vídeo"];
+    hoja.anchoColumnas([13, 12, 22, 5, 36, 26, 19, 15, 20, 40]);
+    const sub = "Semana " + semana.numero + " de " + plan.config.semanas + "  ·  " + rangoLegible(semana.inicio, semana.fin) +
+        "  ·  " + semana.sesiones.length + " sesiones  ·  " + semana.minutos + " min  ·  " +
+        CONTEXTO_LABEL[plan.config.contexto] + (semana.descarga ? "  ·  semana de descarga" : "");
+    cabeceraHoja(wb, hoja, "SEMANA " + semana.numero + " — PLAN DE MOVILIDAD", sub, cabs.length);
+    const filaCab = filaCabeceras(wb, hoja, cabs);
+    hoja.congelarEn(filaCab, 0);
+    let bloque = 0;
+    for (let off = 0; off < 7; off++) {
+        const fecha = sumarDiasISO(semana.inicio, off);
+        const sesion = semana.sesiones.find(s => s.fecha === fecha);
+        const stDia = estXL(wb, { bold: true, color: "FFFFFF", fill: EXCEL_COLOR.pizarra, borderColor: EXCEL_COLOR.pizarra, h: "center" });
+        if (!sesion) {
+            const stApagado = estXL(wb, { color: EXCEL_COLOR.apagado, fill: "FBFCFD", h: "center" });
+            const stDescanso = estXL(wb, { color: EXCEL_COLOR.apagado, italic: true, fill: "FBFCFD" });
+            const f = hoja.fila([
+                { v: DIAS_LARGO[diaSemanaISO(fecha)], s: stApagado },
+                { v: fechaExcel(fecha), s: stApagado },
+                { v: "Descanso", s: stDescanso },
+            ].concat(Array.from({ length: cabs.length - 3 }, () => ({ v: "", s: stDescanso }))), { alto: 20 });
+            hoja.combinar(f, 3, f, cabs.length);
+            continue;
+        }
+        bloque++;
+        const alt = bloque % 2 === 0;
+        const estado = estadoSesion(sesion, state.routineHistory, hoy);
+        const items = sesion.rutina.items;
+        const stFija = estXL(wb, { bold: true, alt, v: "center", h: "center" });
+        const stCuerpo = estXL(wb, { alt });
+        const stCentro = estXL(wb, { alt, h: "center" });
+        const etiquetaSesion = REGION_LABEL_CORTO[sesion.zona] + " · " + sesion.duracion + " min\n" + ESTADO_SESION_LABEL[estado];
+        if (!items.length) {
+            hoja.fila([{ v: DIAS_LARGO[sesion.diaSemana], s: stDia }, { v: fechaExcel(fecha), s: stFija },
+                { v: etiquetaSesion, s: stFija },
+                { v: "", s: stCentro }, { v: "Sin ejercicios disponibles para tu nivel/contexto", s: stCuerpo },
+                { v: "", s: stCuerpo }, { v: "", s: stCuerpo }, { v: "", s: stCuerpo }, { v: "", s: stCuerpo }, { v: "", s: stCuerpo }]);
+            continue;
+        }
+        let primera = 0;
+        items.forEach((item, i) => {
+            const ex = item.exercise;
+            const f = hoja.fila([
+                { v: i === 0 ? DIAS_LARGO[sesion.diaSemana] : "", s: stDia },
+                { v: i === 0 ? fechaExcel(fecha) : "", s: stFija },
+                { v: i === 0 ? etiquetaSesion : "", s: stFija },
+                { v: item.orden, s: stCentro },
+                { v: ex.nombre, s: estXL(wb, { alt, bold: true }) },
+                { v: ex.region + " / " + ex.subregion, s: stCuerpo },
+                { v: ex.dosis || "", s: stCuerpo },
+                { v: ex.modo || "", s: stCuerpo },
+                { v: ex.evidencia || "", s: stCuerpo },
+                { v: ex.videoUrl || "", s: estXL(wb, { alt, color: "2A5DB0", size: 10 }) },
+            ]);
+            if (i === 0)
+                primera = f;
+            if (i === items.length - 1 && items.length > 1) {
+                hoja.combinar(primera, 1, f, 1);
+                hoja.combinar(primera, 2, f, 2);
+                hoja.combinar(primera, 3, f, 3);
+            }
+        });
+    }
+    return hoja;
+}
+function nombreArchivoSeguro(s) { return String(s).replace(/[^\w.-]+/g, "-"); }
+function exportarPlanMesExcel(plan, state) {
+    const wb = crearLibro();
+    hojaCalendarioMes(wb, plan, state);
+    hojaSesiones(wb, plan, state, plan.semanas);
+    hojaEjercicios(wb, plan, state, plan.semanas);
+    descargarArchivo(nombreArchivoSeguro("plan-movilidad_S1-S" + plan.config.semanas + "_" + plan.inicio + ".xlsx"), wb.bytes(), MIME_XLSX);
+}
+function exportarSemanaExcel(plan, semana, state) {
+    const wb = crearLibro();
+    hojaSemanaDetalle(wb, plan, semana, state);
+    hojaSesiones(wb, plan, state, [semana], "Resumen");
+    descargarArchivo(nombreArchivoSeguro("plan-movilidad_semana-" + semana.numero + "_" + semana.inicio + ".xlsx"), wb.bytes(), MIME_XLSX);
+}
+/* ============================================================================
+   EXPORTACIÓN A EXCEL — escritor .xlsx nativo, sin dependencias externas.
+   Genera un OOXML SpreadsheetML mínimo pero con estilos (fuentes, rellenos,
+   bordes, alineación), anchos de columna, celdas combinadas, paneles fijos y
+   autofiltro. Se empaqueta en un ZIP (método "store", sin compresión) escrito
+   a mano para no depender de ninguna librería.
+   ========================================================================== */
+const XLSX_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+function xmlEscape(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&apos;")
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+}
+function argb(color) {
+    const c = String(color).replace("#", "").toUpperCase();
+    return c.length === 6 ? "FF" + c : c;
+}
+function colName(n) { // 1 -> A, 27 -> AA
+    let s = "";
+    while (n > 0) {
+        const r = (n - 1) % 26;
+        s = String.fromCharCode(65 + r) + s;
+        n = Math.floor((n - 1) / 26);
+    }
+    return s;
+}
+const cellRef = (row, col) => colName(col) + row;
+/* --- registro de estilos ------------------------------------------------- */
+function crearRegistroEstilos() {
+    const fonts = ['<font><sz val="11"/><color rgb="FF1D242C"/><name val="Calibri"/></font>'];
+    const fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
+    const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
+    const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
+    const cache = new Map();
+    const push = (arr, xml) => { const i = arr.indexOf(xml); if (i >= 0) return i; arr.push(xml); return arr.length - 1; };
+    function estilo(def) {
+        const key = JSON.stringify(def || {});
+        if (cache.has(key)) return cache.get(key);
+        const d = def || {};
+        const f = d.font || {};
+        const fontId = push(fonts, "<font>" + (f.bold ? "<b/>" : "") + (f.italic ? "<i/>" : "") +
+            '<sz val="' + (f.size || 11) + '"/><color rgb="' + argb(f.color || "1D242C") + '"/>' +
+            '<name val="' + (f.name || "Calibri") + '"/></font>');
+        const fillId = d.fill
+            ? push(fills, '<fill><patternFill patternType="solid"><fgColor rgb="' + argb(d.fill) + '"/><bgColor indexed="64"/></patternFill></fill>')
+            : 0;
+        let borderId = 0;
+        if (d.border) {
+            const estilo_ = d.border === true ? "thin" : d.border;
+            const c = argb(d.borderColor || "D8DCE2");
+            const lado = (t) => "<" + t + ' style="' + estilo_ + '"><color rgb="' + c + '"/></' + t + ">";
+            borderId = push(borders, "<border>" + lado("left") + lado("right") + lado("top") + lado("bottom") + "<diagonal/></border>");
+        }
+        const a = d.align;
+        const alignXml = a
+            ? "<alignment" + (a.h ? ' horizontal="' + a.h + '"' : "") + (a.v ? ' vertical="' + a.v + '"' : "") +
+                (a.wrap ? ' wrapText="1"' : "") + (a.indent ? ' indent="' + a.indent + '"' : "") + "/>"
+            : "";
+        const xf = '<xf numFmtId="' + (d.numFmtId || 0) + '" fontId="' + fontId + '" fillId="' + fillId +
+            '" borderId="' + borderId + '" xfId="0" applyFont="1"' +
+            (fillId ? ' applyFill="1"' : "") + (borderId ? ' applyBorder="1"' : "") +
+            (alignXml ? ' applyAlignment="1"' : "") + (d.numFmtId ? ' applyNumberFormat="1"' : "") +
+            (alignXml ? ">" + alignXml + "</xf>" : "/>");
+        const id = push(xfs, xf);
+        cache.set(key, id);
+        return id;
+    }
+    function xml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+            '<styleSheet xmlns="' + XLSX_NS + '">' +
+            '<numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/></numFmts>' +
+            '<fonts count="' + fonts.length + '">' + fonts.join("") + "</fonts>" +
+            '<fills count="' + fills.length + '">' + fills.join("") + "</fills>" +
+            '<borders count="' + borders.length + '">' + borders.join("") + "</borders>" +
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+            '<cellXfs count="' + xfs.length + '">' + xfs.join("") + "</cellXfs>" +
+            '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+            "</styleSheet>";
+    }
+    return { estilo, xml };
+}
+/* --- hoja ---------------------------------------------------------------- */
+function crearHoja(nombre) {
+    const filas = [];
+    const merges = [];
+    let anchos = [];
+    let congelar = null;
+    let autoFiltro = null;
+    const hoja = {
+        nombre,
+        get numFilas() { return filas.length; },
+        anchoColumnas(ws) { anchos = ws; return hoja; },
+        congelarEn(fila, col) { congelar = { fila: fila || 0, col: col || 0 }; return hoja; },
+        filtrar(f1, c1, f2, c2) { autoFiltro = cellRef(f1, c1) + ":" + cellRef(f2, c2); return hoja; },
+        // celdas: array de {v, s} | valor plano | null
+        fila(celdas, opts) {
+            filas.push({ celdas: celdas || [], alto: (opts && opts.alto) || null });
+            return filas.length; // índice 1-based de la fila añadida
+        },
+        combinar(f1, c1, f2, c2) { merges.push(cellRef(f1, c1) + ":" + cellRef(f2, c2)); return hoja; },
+        xml() {
+            let maxCol = 1;
+            const filasXml = filas.map((f, i) => {
+                const r = i + 1;
+                const cs = f.celdas.map((celda, j) => {
+                    if (celda == null) return "";
+                    const c = (typeof celda === "object" && !(celda instanceof Date)) ? celda : { v: celda };
+                    const col = j + 1;
+                    if (col > maxCol) maxCol = col;
+                    const ref = cellRef(r, col);
+                    const s = c.s ? ' s="' + c.s + '"' : "";
+                    if (c.v == null || c.v === "") return "<c r=\"" + ref + "\"" + s + "/>";
+                    if (typeof c.v === "number" && isFinite(c.v)) return "<c r=\"" + ref + "\"" + s + "><v>" + c.v + "</v></c>";
+                    return "<c r=\"" + ref + "\"" + s + ' t="inlineStr"><is><t xml:space="preserve">' + xmlEscape(c.v) + "</t></is></c>";
+                }).join("");
+                const alto = f.alto ? ' ht="' + f.alto + '" customHeight="1"' : "";
+                return '<row r="' + r + '"' + alto + ">" + cs + "</row>";
+            }).join("");
+            const colsXml = anchos.length
+                ? "<cols>" + anchos.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join("") + "</cols>"
+                : "";
+            let panesXml = "";
+            if (congelar && (congelar.fila || congelar.col)) {
+                const top = cellRef(congelar.fila + 1, congelar.col + 1);
+                const panelActivo = congelar.col && congelar.fila ? "bottomRight" : congelar.col ? "topRight" : "bottomLeft";
+                panesXml = "<pane" + (congelar.col ? ' xSplit="' + congelar.col + '"' : "") +
+                    (congelar.fila ? ' ySplit="' + congelar.fila + '"' : "") +
+                    ' topLeftCell="' + top + '" activePane="' + panelActivo + '" state="frozen"/>' +
+                    '<selection pane="' + panelActivo + '" activeCell="' + top + '" sqref="' + top + '"/>';
+            }
+            const dim = "A1:" + cellRef(Math.max(filas.length, 1), maxCol);
+            return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                '<worksheet xmlns="' + XLSX_NS + '">' +
+                '<dimension ref="' + dim + '"/>' +
+                '<sheetViews><sheetView showGridLines="0" workbookViewId="0">' + panesXml + "</sheetView></sheetViews>" +
+                '<sheetFormatPr defaultRowHeight="15"/>' +
+                colsXml +
+                "<sheetData>" + filasXml + "</sheetData>" +
+                (autoFiltro ? '<autoFilter ref="' + autoFiltro + '"/>' : "") +
+                (merges.length ? '<mergeCells count="' + merges.length + '">' + merges.map(m => '<mergeCell ref="' + m + '"/>').join("") + "</mergeCells>" : "") +
+                '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>' +
+                "</worksheet>";
+        },
+    };
+    return hoja;
+}
+/* --- libro --------------------------------------------------------------- */
+function crearLibro() {
+    const hojas = [];
+    const estilos = crearRegistroEstilos();
+    return {
+        estilo: estilos.estilo,
+        hoja(nombre) {
+            // Excel limita los nombres de hoja a 31 caracteres y prohíbe : \ / ? * [ ]
+            const limpio = String(nombre).replace(/[:\\\/?*\[\]]/g, "-").slice(0, 31) || "Hoja";
+            const h = crearHoja(limpio);
+            hojas.push(h);
+            return h;
+        },
+        bytes() {
+            const archivos = [];
+            const add = (nombre, texto) => archivos.push({ nombre, datos: new TextEncoder().encode(texto) });
+            const sheetTags = hojas.map((h, i) => '<sheet name="' + xmlEscape(h.nombre) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join("");
+            const relTags = hojas.map((_, i) => '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>').join("");
+            add("[Content_Types].xml",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+                '<Default Extension="xml" ContentType="application/xml"/>' +
+                '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+                hojas.map((_, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join("") +
+                '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+                "</Types>");
+            add("_rels/.rels",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+                "</Relationships>");
+            add("xl/workbook.xml",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                '<workbook xmlns="' + XLSX_NS + '" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+                "<sheets>" + sheetTags + "</sheets></workbook>");
+            add("xl/_rels/workbook.xml.rels",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+                relTags +
+                '<Relationship Id="rId' + (hojas.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+                "</Relationships>");
+            add("xl/styles.xml", estilos.xml());
+            hojas.forEach((h, i) => add("xl/worksheets/sheet" + (i + 1) + ".xml", h.xml()));
+            return zipStore(archivos);
+        },
+    };
+}
+/* --- ZIP (método store) --------------------------------------------------- */
+let CRC_TABLE = null;
+function crc32(buf) {
+    if (!CRC_TABLE) {
+        CRC_TABLE = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+            let c = n;
+            for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+            CRC_TABLE[n] = c >>> 0;
+        }
+    }
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zipStore(archivos) {
+    const enc = new TextEncoder();
+    const ahora = new Date();
+    const dosTime = ((ahora.getHours() << 11) | (ahora.getMinutes() << 5) | (Math.floor(ahora.getSeconds() / 2))) & 0xFFFF;
+    const dosDate = (((ahora.getFullYear() - 1980) << 9) | ((ahora.getMonth() + 1) << 5) | ahora.getDate()) & 0xFFFF;
+    const locales = [];
+    const centrales = [];
+    let offset = 0;
+    for (const f of archivos) {
+        const nombreBytes = enc.encode(f.nombre);
+        const crc = crc32(f.datos);
+        const local = new Uint8Array(30 + nombreBytes.length);
+        const lv = new DataView(local.buffer);
+        lv.setUint32(0, 0x04034b50, true);
+        lv.setUint16(4, 20, true);          // versión necesaria
+        lv.setUint16(6, 0x0800, true);      // flag: nombres en UTF-8
+        lv.setUint16(8, 0, true);           // método: store
+        lv.setUint16(10, dosTime, true);
+        lv.setUint16(12, dosDate, true);
+        lv.setUint32(14, crc, true);
+        lv.setUint32(18, f.datos.length, true);
+        lv.setUint32(22, f.datos.length, true);
+        lv.setUint16(26, nombreBytes.length, true);
+        lv.setUint16(28, 0, true);
+        local.set(nombreBytes, 30);
+        locales.push(local, f.datos);
+        const central = new Uint8Array(46 + nombreBytes.length);
+        const cv = new DataView(central.buffer);
+        cv.setUint32(0, 0x02014b50, true);
+        cv.setUint16(4, 20, true);
+        cv.setUint16(6, 20, true);
+        cv.setUint16(8, 0x0800, true);
+        cv.setUint16(10, 0, true);
+        cv.setUint16(12, dosTime, true);
+        cv.setUint16(14, dosDate, true);
+        cv.setUint32(16, crc, true);
+        cv.setUint32(20, f.datos.length, true);
+        cv.setUint32(24, f.datos.length, true);
+        cv.setUint16(28, nombreBytes.length, true);
+        cv.setUint32(42, offset, true);
+        central.set(nombreBytes, 46);
+        centrales.push(central);
+        offset += local.length + f.datos.length;
+    }
+    const tamCentral = centrales.reduce((a, b) => a + b.length, 0);
+    const fin = new Uint8Array(22);
+    const fv = new DataView(fin.buffer);
+    fv.setUint32(0, 0x06054b50, true);
+    fv.setUint16(8, archivos.length, true);
+    fv.setUint16(10, archivos.length, true);
+    fv.setUint32(12, tamCentral, true);
+    fv.setUint32(16, offset, true);
+    const partes = [...locales, ...centrales, fin];
+    const total = partes.reduce((a, p) => a + p.length, 0);
+    const salida = new Uint8Array(total);
+    let p = 0;
+    for (const parte of partes) { salida.set(parte, p); p += parte.length; }
+    return salida;
+}
+function descargarArchivo(nombre, bytes, mime) {
+    const blob = new Blob([bytes], { type: mime || "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = nombre;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+/* ============================================================================
    ALMACENAMIENTO — localStorage (versión standalone, fuera del entorno Claude)
    ========================================================================== */
 const STORAGE_KEY = "climb-mobility-state-v1";
@@ -508,6 +1227,9 @@ const DEFAULT_STATE = {
     routineHistory: [], // [{fecha, duracion, contexto, tipo, exerciseIds:[], completada}]
     feedbackHistory: [], // [{exerciseId, valor, fecha}]
     exclusiones: [], // [exerciseId]
+    // {inicioSemana1, semanas, dias, duracion, contexto, descarga} — null hasta
+    // que el usuario toca el plan por primera vez (entonces se guarda entero).
+    planConfig: null,
 };
 async function loadState() {
     try {
@@ -665,13 +1387,14 @@ function PrimaryButton({ children, onClick, disabled, style }) {
 function BottomNav({ view, setView }) {
     const items = [
         { id: "home", label: "Hoy", Icon: Home },
+        { id: "plan", label: "Plan", Icon: CalendarIcon },
         { id: "progress", label: "Progreso", Icon: BarChart3 },
         { id: "routines", label: "Rutinas", Icon: Dumbbell },
         { id: "profile", label: "Perfil", Icon: User },
     ];
     return (React.createElement("div", { className: "fixed bottom-0 left-0 right-0 flex justify-around items-center py-2 px-2 z-30", style: { background: "rgba(18,22,27,0.92)", backdropFilter: "blur(12px)", borderTop: "1px solid #2A323C" } }, items.map(({ id, label, Icon }) => {
         const active = view === id;
-        return (React.createElement("button", { key: id, onClick: () => setView(id), className: "flex flex-col items-center gap-1 py-1 px-4" },
+        return (React.createElement("button", { key: id, onClick: () => setView(id), className: "flex flex-col items-center gap-1 py-1 px-2" },
             React.createElement(Icon, { size: 22, color: active ? "#DAB53E" : "#5B6672", strokeWidth: active ? 2.4 : 1.8 }),
             React.createElement("span", { className: "text-xs font-medium", style: { color: active ? "#DAB53E" : "#5B6672" } }, label)));
     })));
@@ -1166,6 +1889,200 @@ function RoutinesScreen({ state, onGenerate, onGenerateByZone }) {
                 React.createElement("span", { style: { color: r.completada ? "#4CAF6D" : "#5B6672" } }, r.completada ? React.createElement(Check, { size: 18 }) : React.createElement(X, { size: 18 }))))))))));
 }
 /* ============================================================================
+   PANTALLA: PLAN — mesociclo con fecha de inicio de la Semana 1 elegida por el
+   usuario, vista semanal y mensual, y exportación a Excel.
+   ========================================================================== */
+function PlanScreen({ state, onChangeConfig, onStartPlanSession }) {
+    const cfg = useMemo(() => normalizarPlanConfig(state.planConfig), [state.planConfig]);
+    const plan = useMemo(() => generarPlan(state, cfg, EXERCISES), [state, cfg]);
+    const hoy = todayISO();
+    const indiceHoy = plan.semanas.findIndex(s => hoy >= s.inicio && hoy <= s.fin);
+    const [semanaIdx, setSemanaIdx] = useState(indiceHoy >= 0 ? indiceHoy : 0);
+    const [vista, setVista] = useState("semana"); // "semana" | "mes"
+    const [ajustesAbiertos, setAjustesAbiertos] = useState(!state.planConfig);
+    const [aviso, setAviso] = useState(null);
+    useEffect(() => {
+        if (semanaIdx > plan.semanas.length - 1)
+            setSemanaIdx(plan.semanas.length - 1);
+    }, [plan.semanas.length, semanaIdx]);
+    const idx = Math.min(semanaIdx, plan.semanas.length - 1);
+    const semana = plan.semanas[idx];
+    const sesionesHechas = plan.semanas.reduce((a, w) => a + w.sesiones.filter(s => estadoSesion(s, state.routineHistory, hoy) === "hecha").length, 0);
+    function alternarDia(d) {
+        const dias = cfg.dias.includes(d) ? cfg.dias.filter(x => x !== d) : [...cfg.dias, d];
+        if (!dias.length) {
+            mostrarAviso("Deja al menos un día de entrenamiento.");
+            return;
+        }
+        onChangeConfig({ dias });
+    }
+    function mostrarAviso(texto) {
+        setAviso(texto);
+        setTimeout(() => setAviso(a => (a === texto ? null : a)), 3500);
+    }
+    function exportar(accion, exito) {
+        try {
+            accion();
+            mostrarAviso(exito);
+        }
+        catch (e) {
+            mostrarAviso("No se ha podido generar el Excel: " + ((e && e.message) || e));
+        }
+    }
+    const etiquetaEstado = (s) => ESTADO_SESION_LABEL[estadoSesion(s, state.routineHistory, hoy)];
+    const colorEstado = (s) => ESTADO_SESION_COLOR[estadoSesion(s, state.routineHistory, hoy)];
+    /* --- bloque: fecha de inicio de la Semana 1 --------------------------- */
+    const bloqueInicio = React.createElement("div", { className: "rounded-2xl p-5 mb-4", style: CARD_STYLE },
+        React.createElement("p", { className: "text-xs uppercase tracking-widest mb-2", style: { color: "#5B6672" } }, "La semana 1 empieza el"),
+        React.createElement("input", {
+            type: "date", value: cfg.inicioSemana1,
+            onChange: (e) => { if (esISOValida(e.target.value)) onChangeConfig({ inicioSemana1: e.target.value }); },
+            className: "w-full rounded-xl px-3 py-3 text-base mb-2",
+            style: {
+                background: "#12161B", border: "1px solid #2A323C", color: "#EDEFF2",
+                colorScheme: "dark", fontFamily: "'JetBrains Mono', monospace",
+            },
+        }),
+        React.createElement("p", { className: "text-sm mb-3", style: { color: "#8B95A1" } },
+            "Semana 1: ", fechaLarga(cfg.inicioSemana1)),
+        React.createElement("div", { className: "flex gap-2 flex-wrap" },
+            React.createElement("button", { onClick: () => onChangeConfig({ inicioSemana1: hoy }), className: "px-3 py-1.5 rounded-full text-xs font-medium", style: CARD_STYLE_SUBTLE_TEXT }, "Hoy"),
+            React.createElement("button", { onClick: () => onChangeConfig({ inicioSemana1: proximoLunes(hoy) }), className: "px-3 py-1.5 rounded-full text-xs font-medium", style: CARD_STYLE_SUBTLE_TEXT }, "Próximo lunes"),
+            React.createElement("button", { onClick: () => onChangeConfig({ inicioSemana1: sumarDiasISO(cfg.inicioSemana1, 7) }), className: "px-3 py-1.5 rounded-full text-xs font-medium", style: CARD_STYLE_SUBTLE_TEXT }, "+1 semana"),
+            React.createElement("button", { onClick: () => onChangeConfig({ inicioSemana1: sumarDiasISO(cfg.inicioSemana1, -7) }), className: "px-3 py-1.5 rounded-full text-xs font-medium", style: CARD_STYLE_SUBTLE_TEXT }, "−1 semana")));
+    /* --- bloque: ajustes del plan ----------------------------------------- */
+    const bloqueAjustes = React.createElement("div", { className: "mb-6" },
+        React.createElement("button", { onClick: () => setAjustesAbiertos(v => !v), className: "flex items-center justify-between w-full rounded-2xl px-4 py-3 mb-2", style: CARD_STYLE_SUBTLE },
+            React.createElement("span", { className: "text-sm font-medium", style: { color: "#C7CDD5" } }, "Ajustes del plan"),
+            React.createElement("span", { className: "text-xs", style: { color: "#5B6672" } },
+                cfg.semanas, " sem · ", cfg.dias.length, " días · ", cfg.duracion, " min")),
+        ajustesAbiertos && React.createElement("div", { className: "rounded-2xl p-5 space-y-5 animate-fadein", style: CARD_STYLE },
+            React.createElement("div", null,
+                React.createElement("p", { className: "text-xs uppercase tracking-widest mb-3", style: { color: "#5B6672" } }, "Duración del plan"),
+                React.createElement("div", { className: "flex gap-2 overflow-x-auto" }, PLAN_SEMANAS_OPCIONES.map(n => React.createElement(Chip, { key: n, active: cfg.semanas === n, onClick: () => onChangeConfig({ semanas: n }) }, n, " sem")))),
+            React.createElement("div", null,
+                React.createElement("p", { className: "text-xs uppercase tracking-widest mb-3", style: { color: "#5B6672" } }, "Días de entrenamiento"),
+                React.createElement("div", { className: "flex gap-2" }, ORDEN_DIAS_UI.map(d => {
+                    const activo = cfg.dias.includes(d);
+                    return React.createElement("button", {
+                        key: d, onClick: () => alternarDia(d), "aria-label": DIAS_LARGO[d],
+                        className: "flex-1 h-11 rounded-xl text-sm font-semibold transition-all active:scale-95",
+                        style: {
+                            background: activo ? "linear-gradient(135deg,#D8B23A,#B8901F)" : "#12161B",
+                            color: activo ? "#12161B" : "#5B6672",
+                            border: "1px solid " + (activo ? "#C9A227" : "#262E37"),
+                        },
+                    }, DIAS_CORTO[d]);
+                }))),
+            React.createElement("div", null,
+                React.createElement("p", { className: "text-xs uppercase tracking-widest mb-3", style: { color: "#5B6672" } }, "Duración por sesión"),
+                React.createElement("div", { className: "flex gap-2 overflow-x-auto" }, [5, 10, 15, 20].map(d => React.createElement(Chip, { key: d, active: cfg.duracion === d, onClick: () => onChangeConfig({ duracion: d }) }, d, " min")))),
+            React.createElement("div", null,
+                React.createElement("p", { className: "text-xs uppercase tracking-widest mb-3", style: { color: "#5B6672" } }, "Contexto"),
+                React.createElement("div", { className: "flex gap-2 overflow-x-auto" }, [["general", "General"], ["pre", "Pre-escalada"], ["post", "Post-escalada"]].map(par => React.createElement(Chip, { key: par[0], active: cfg.contexto === par[0], onClick: () => onChangeConfig({ contexto: par[0] }) }, par[1])))),
+            React.createElement("button", { onClick: () => onChangeConfig({ descarga: !cfg.descarga }), className: "flex items-center gap-3 w-full text-left" },
+                React.createElement("span", {
+                    className: "w-11 h-6 rounded-full relative transition-all shrink-0",
+                    style: { background: cfg.descarga ? "#C9A227" : "#2A323C" },
+                }, React.createElement("span", {
+                    className: "absolute top-0.5 w-5 h-5 rounded-full transition-all",
+                    style: { background: cfg.descarga ? "#12161B" : "#5B6672", left: cfg.descarga ? 22 : 2 },
+                })),
+                React.createElement("span", null,
+                    React.createElement("span", { className: "block text-sm", style: { color: "#EDEFF2" } }, "Última semana de descarga"),
+                    React.createElement("span", { className: "block text-xs", style: { color: "#5B6672" } }, "Reduce el volumen en la última semana del plan"))),
+            React.createElement("p", { className: "text-xs leading-relaxed", style: { color: "#5B6672" } },
+                plan.basadoEnTest
+                    ? "Las zonas rotan según los déficits de tu último test: " + plan.zonas.map(z => REGION_LABEL_CORTO[z]).join(" · ")
+                    : "Aún no has hecho el test, así que el plan rota por todas las zonas. Haz el test para priorizar tus déficits.")));
+    /* --- vista semanal ---------------------------------------------------- */
+    const vistaSemana = React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "flex items-center justify-between mb-4" },
+            React.createElement("button", { onClick: () => setSemanaIdx(Math.max(0, idx - 1)), disabled: idx === 0, className: "p-2 rounded-xl disabled:opacity-25", style: CARD_STYLE_SUBTLE, "aria-label": "Semana anterior" },
+                React.createElement(ChevronLeft, { size: 18, color: "#C7CDD5" })),
+            React.createElement("div", { className: "text-center" },
+                React.createElement("p", { className: "text-base font-semibold", style: { fontFamily: "'Space Grotesk', sans-serif", color: "#EDEFF2" } },
+                    "Semana ", semana.numero, semana.descarga ? " · descarga" : ""),
+                React.createElement("p", { className: "text-xs", style: { color: "#5B6672" } }, rangoLegible(semana.inicio, semana.fin))),
+            React.createElement("button", { onClick: () => setSemanaIdx(Math.min(plan.semanas.length - 1, idx + 1)), disabled: idx >= plan.semanas.length - 1, className: "p-2 rounded-xl disabled:opacity-25", style: CARD_STYLE_SUBTLE, "aria-label": "Semana siguiente" },
+                React.createElement(ChevronRight, { size: 18, color: "#C7CDD5" }))),
+        React.createElement("div", { className: "space-y-2 mb-6" }, Array.from({ length: 7 }, (_, off) => {
+            const fecha = sumarDiasISO(semana.inicio, off);
+            const sesion = semana.sesiones.find(s => s.fecha === fecha);
+            const esHoy = fecha === hoy;
+            if (!sesion) {
+                return React.createElement("div", { key: fecha, className: "rounded-2xl px-4 py-3 flex items-center gap-3", style: { background: "#151A20", border: "1px dashed #262E37" } },
+                    React.createElement("span", { className: "text-xs w-16 shrink-0", style: { color: esHoy ? "#DAB53E" : "#5B6672", fontFamily: "'JetBrains Mono', monospace" } },
+                        DIAS_ABREV[diaSemanaISO(fecha)], " ", fechaCorta(fecha)),
+                    React.createElement("span", { className: "text-sm", style: { color: "#5B6672" } }, "Descanso"));
+            }
+            return React.createElement("div", { key: fecha, className: "rounded-2xl p-4", style: { ...CARD_STYLE, borderColor: esHoy ? "#C9A227" : "#2A323C" } },
+                React.createElement("div", { className: "flex items-center justify-between gap-3" },
+                    React.createElement("div", { className: "min-w-0" },
+                        React.createElement("p", { className: "text-xs mb-1", style: { color: esHoy ? "#DAB53E" : "#5B6672", fontFamily: "'JetBrains Mono', monospace" } },
+                            DIAS_ABREV[sesion.diaSemana], " ", fechaCorta(fecha), esHoy ? " · HOY" : ""),
+                        React.createElement("p", { className: "font-semibold truncate", style: { color: "#EDEFF2" } },
+                            REGION_EMOJI[sesion.zona], " ", REGION_LABEL_CORTO[sesion.zona], " · ", sesion.duracion, " min"),
+                        React.createElement("p", { className: "text-xs mt-0.5", style: { color: colorEstado(sesion) } },
+                            sesion.rutina.items.length, " ejercicios · ", etiquetaEstado(sesion))),
+                    React.createElement("button", {
+                        onClick: () => onStartPlanSession(sesion), disabled: !sesion.rutina.items.length,
+                        className: "px-4 py-2 rounded-xl text-sm font-semibold shrink-0 active:scale-95 transition-transform disabled:opacity-30",
+                        style: { background: "linear-gradient(135deg,#DAB53E,#B8901F)", color: "#12161B" },
+                    }, "Empezar")));
+        })));
+    /* --- vista mensual ---------------------------------------------------- */
+    const vistaMes = React.createElement("div", { className: "space-y-3 mb-6" }, plan.semanas.map((w, i) => React.createElement("div", { key: w.numero, className: "rounded-2xl p-4", style: CARD_STYLE },
+        React.createElement("div", { className: "flex items-baseline justify-between mb-3" },
+            React.createElement("p", { className: "text-sm font-semibold", style: { color: "#EDEFF2" } },
+                "Semana ", w.numero, w.descarga ? " · descarga" : ""),
+            React.createElement("p", { className: "text-xs", style: { color: "#5B6672" } },
+                w.sesiones.length, " ses. · ", w.minutos, " min")),
+        React.createElement("div", { className: "flex gap-1" }, Array.from({ length: 7 }, (_, off) => {
+            const fecha = sumarDiasISO(w.inicio, off);
+            const sesion = w.sesiones.find(s => s.fecha === fecha);
+            const esHoy = fecha === hoy;
+            return React.createElement("button", {
+                key: fecha,
+                onClick: () => { setSemanaIdx(i); setVista("semana"); },
+                className: "flex-1 rounded-lg py-2 px-0.5 text-center transition-transform active:scale-95",
+                style: {
+                    background: sesion ? "#1F2730" : "#141920",
+                    border: "1px solid " + (esHoy ? "#C9A227" : sesion ? "#2A323C" : "#1E242B"),
+                    minWidth: 0,
+                },
+            }, React.createElement("span", { className: "block text-[10px]", style: { color: "#5B6672" } }, DIAS_CORTO[diaSemanaISO(fecha)]), React.createElement("span", { className: "block text-xs font-semibold", style: { color: esHoy ? "#DAB53E" : "#C7CDD5", fontFamily: "'JetBrains Mono', monospace" } }, parseISO(fecha).getUTCDate()), sesion
+                ? React.createElement("span", { className: "block mx-auto mt-1 rounded-full", style: { width: 6, height: 6, background: colorEstado(sesion) } })
+                : React.createElement("span", { className: "block text-[10px] mt-0.5", style: { color: "#39424D" } }, "–"));
+        })))));
+    /* --- render ----------------------------------------------------------- */
+    return React.createElement("div", { className: "pb-28 px-5 pt-20" },
+        React.createElement("h1", { className: "text-2xl font-semibold mb-1", style: { fontFamily: "'Space Grotesk', sans-serif", color: "#EDEFF2" } }, "Plan"),
+        React.createElement("p", { className: "text-sm mb-5", style: { color: "#8B95A1" } },
+            rangoLegible(plan.inicio, plan.fin), " · ", plan.totalSesiones, " sesiones · ", sesionesHechas, " hechas"),
+        bloqueInicio,
+        bloqueAjustes,
+        React.createElement("div", { className: "flex gap-2 mb-5" },
+            React.createElement(Chip, { active: vista === "semana", onClick: () => setVista("semana") }, "Semana"),
+            React.createElement(Chip, { active: vista === "mes", onClick: () => setVista("mes") }, "Mes completo")),
+        vista === "semana" ? vistaSemana : vistaMes,
+        React.createElement("p", { className: "text-xs uppercase tracking-widest mb-3", style: { color: "#5B6672" } }, "Exportar a Excel"),
+        React.createElement("div", { className: "space-y-2 mb-3" },
+            React.createElement(PrimaryButton, { onClick: () => exportar(() => exportarPlanMesExcel(plan, state), "Excel del plan descargado") },
+                "📅  Plan completo (", plan.config.semanas, " semanas)"),
+            React.createElement("button", {
+                onClick: () => exportar(() => exportarSemanaExcel(plan, semana, state), "Excel de la semana " + semana.numero + " descargado"),
+                className: "w-full py-4 rounded-2xl font-semibold text-base active:scale-95 transition-transform",
+                style: { background: "#1D242C", border: "1px solid #2A323C", color: "#EDEFF2", fontFamily: "'Space Grotesk', sans-serif" },
+            }, "📄  Solo la semana ", semana.numero)),
+        React.createElement("p", { className: "text-xs leading-relaxed", style: { color: "#5B6672" } },
+            "Archivo .xlsx con cabeceras fijas, filtros y una hoja por vista: calendario, sesiones y ejercicio a ejercicio. Se abre en Excel, Numbers o Google Sheets."),
+        aviso && React.createElement("div", {
+            className: "fixed left-0 right-0 flex justify-center px-5 z-40 animate-fadein",
+            style: { bottom: 84, pointerEvents: "none" },
+        }, React.createElement("div", { className: "rounded-full px-4 py-2 text-sm", style: { background: "#1D242C", border: "1px solid #C9A227", color: "#EDEFF2", maxWidth: 420 } }, aviso)));
+}
+/* ============================================================================
    PANTALLA: PERFIL
    ========================================================================== */
 function ProfileScreen({ state, onChangeNivel, onReset }) {
@@ -1246,6 +2163,20 @@ function App() {
         setRutinaMeta({ duracion, contexto });
         setFlow("player");
     }
+    function cambiarPlanConfig(parche) {
+        const actual = normalizarPlanConfig(state.planConfig);
+        persist({ ...state, planConfig: normalizarPlanConfig({ ...actual, ...parche }) });
+    }
+    function iniciarSesionDelPlan(sesion) {
+        if (!sesion.rutina.items.length) {
+            alert(`No hay ejercicios de ${sesion.zona} disponibles para tu nivel/contexto actual.`);
+            return;
+        }
+        const rutina = { ...sesion.rutina, versionMotor: "1.0", versionBiblioteca: "1.2" };
+        setRutinaActiva(rutina);
+        setRutinaMeta({ duracion: sesion.duracion, contexto: sesion.contexto });
+        setFlow("player");
+    }
     function registrarFeedback(exerciseId, valor) {
         const next = {
             ...state,
@@ -1298,6 +2229,7 @@ function App() {
         content = (React.createElement(React.Fragment, null,
             React.createElement(TopBar, { racha: racha }),
             view === "home" && (React.createElement(HomeScreen, { state: state, onStartTest: iniciarTest, onStartRoutine: iniciarRutina, onStartRoutineByZone: iniciarRutinaPorZona })),
+            view === "plan" && (React.createElement(PlanScreen, { state: state, onChangeConfig: cambiarPlanConfig, onStartPlanSession: iniciarSesionDelPlan })),
             view === "progress" && React.createElement(ProgressScreen, { state: state, onRetest: iniciarTest }),
             view === "routines" && React.createElement(RoutinesScreen, { state: state, onGenerate: iniciarRutina, onGenerateByZone: iniciarRutinaPorZona }),
             view === "profile" && (React.createElement(ProfileScreen, { state: state, onChangeNivel: (n) => persist({ ...state, nivel: n }), onReset: () => persist({ ...DEFAULT_STATE }) })),
